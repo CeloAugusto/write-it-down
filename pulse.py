@@ -1,8 +1,9 @@
-from wave import open as wav_open
+from wave import open as wav_open, Error
 from pulsectl import Pulse
+from pulsectl.pulsectl import PulseOperationFailed
 from subprocess import Popen
 from signal import SIGINT
-from os import remove, listdir
+from os import remove, listdir, rename
 
 AUDIOS_PATH = "./audios"
 
@@ -38,11 +39,11 @@ def list_audios():
 
 
 def rec_in_wav(audio_name):
-    # with Pulse("rec-pulse") as pulse:
-    # call_rep = [x for x in pulse.sink_input_list() if x.name == "playStream"][0]
     temp_file = "%s/temp.wav" % AUDIOS_PATH
     audio_file = "%s/%s.wav" % (AUDIOS_PATH, audio_name)
     try:
+        input('You will overwrite "%s", confirm? [Any : CTRL+C]' % audio_name)
+
         rec_process = Popen(
             "parec " +
             "--device=alsa_output.pci-0000_00_1f.3.analog-stereo.monitor " +
@@ -53,19 +54,26 @@ def rec_in_wav(audio_name):
         rec_process.communicate()
     except KeyboardInterrupt:
         rec_process.send_signal(SIGINT)
+    except Exception as e:
+        print("You should handle this error!")
+        print(e.__repr__())
 
-    open(audio_file, "a").close()
-    with wav_open(temp_file, "r") as r, wav_open(audio_file, "w") as w:
-        w.setnchannels(r.getnchannels())
-        w.setsampwidth(r.getsampwidth())
-        w.setframerate(r.getframerate())
-        for i in range(r.getnframes()):
-            frame = r.readframes(1)
-            for j in range(len(frame)):
-                if frame[j] > 0:
-                    w.writeframes(frame)
-                    break
-    remove(temp_file)
+    try:
+        open(audio_file, "a").close()
+        with wav_open(temp_file, "r") as r, wav_open(audio_file, "w") as w:
+            w.setnchannels(r.getnchannels())
+            w.setsampwidth(r.getsampwidth())
+            w.setframerate(r.getframerate())
+            for i in range(r.getnframes()):
+                frame = r.readframes(1)
+                for j in range(len(frame)):
+                    if frame[j] > 0:
+                        w.writeframes(frame)
+                        break
+    except Error:
+        rename(temp_file, audio_file)
+    else:
+        remove(temp_file)
 
 
 def play_in_sink(audio_name):
@@ -85,11 +93,15 @@ def play_in_sink(audio_name):
         new_source = [
             x for x in pulse.source_list() if x.name == "WriteItDown.monitor"
         ][0]
-        rec_source = [x for x in pulse.source_output_list() if x.name == "recStream"][0]
 
         pulse.volume_set_all_chans(new_sink, 1)
         pulse.volume_set_all_chans(new_source, 1)
-        pulse.source_output_move(rec_source.index, new_source.index)
+        for rec_source in pulse.source_output_list():
+            if rec_source.name == "recStream":
+                try:
+                    pulse.source_output_move(rec_source.index, new_source.index)
+                except PulseOperationFailed:
+                    pass
 
         try:
             play_process = Popen(
